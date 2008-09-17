@@ -1,0 +1,515 @@
+===============
+Floppy Disk Controller
+===============
+FDC is a device that controls hardware for access to 3 1/2 inch floppy
+disks.
+
+===============
+Floppy Registers
+===============
+0x3F0 = Status Register A [Read Only]
+0x3F1 = Status Register B [Read Only]
+0x3F2 = Digital Output Register
+0x3F3 = Tape Drive Register
+0x3F4 = Main Status Register [Read Only]
+0x3F4 = Data Rate Select Register [Write Only]
+0x3F5 = Data FIFO
+0x3F6 = Digital Input Register [Read Only]
+0x3F7 = Configuration Control Register [Write Only]
+
+==============
+Floppy Commands
+===============
+0  = 
+1  = 
+2  = Read Track
+3  = Specify
+4  = Sense Drive Status
+5  = Write Data
+6  = Read Data
+7  = Recalibrate
+8  = Sense interrupt
+9  = Write Deleted Data
+10 = Read ID
+11 = 
+12 = Read Deleted Data
+13 = Format Track
+14 = 
+15 = Seek
+16 = Version
+17 = Scan Equal
+18 = Perpendicular Mode
+19 = Configure
+20 = 
+21 = 
+22 = Verify
+23 = 
+24 = 
+25 = Scan Low Or Equal
+26 = 
+27 = 
+28 = 
+29 = Scan High Or Equal
+
+===============
+Notes
+===============
+  All command parameter information and disk data transfers go through the FIFO.
+  Before starting a transfer, turn the motor on, aind wait, for 3 1/2 inch floppy,
+300 mS, and for a 5 1/4 inch floppy, 500 mS.
+  After stopping the motor, a delay of 2 seconds is recommeded.
+  Data transfers occur using the ISA DMA controller.
+  Before you can read/write to a track, you need to issue a "seek/recalibrate"
+command to reach that track.
+  When an error has been encountered while reading/writing you have to recalibrate
+
+===============
+Floppy Drive Detection
+===============
+Floppy Drive detection goes via the CMOS. See the CMOS docs for the list of types.
+It is located at byte 10h. The first 4 bits are the first drive,
+the last 4 bits are the second drive.
+
+===========
+Example
+===========
+Written in C
+
+static const char * driveTypes[] = 
+{
+	"none",
+	"360kB 5.25\"",
+	"1.2MB 5.25\"\"",
+	"720kB 3.5\"",
+	"1.44MB 3.5\"",
+	"2.88MB 3,5\"",
+	"unknown type",
+	"unknown type"
+};
+
+void floppyDetectDrives()
+{
+	outb(0x70, 0x10);
+	unsigned drives = inb(0x71);
+
+	kprintf(" - Floppy drive 0: %s\n",driveTypes[drives >> 4]);
+	kprintf(" - Floppy drive 1: %s\n",driveTypes[drives & 0xf]);
+}
+
+=====================================
+Writing commands and reading results
+=====================================
+
+===========
+The MSR byte
+===========
+ 7     6     5     4     3     2     1     0
+MRQ   DIA   NMDA  BUSY  ACTD  ACTC  ACTB  ACTA
+
+MRQ is 1 when FIFO is ready. (test before read/write)
+DIO tells if controller expects write (1) or read (0)
+NDMA tells if controller is in DMA mode (1 = no-DMA, 0 = DMA)
+BUSY tells us if controller is executing a command (1 = busy)
+ACTA/ACTB/ACTC/ACTD tell which drives position/calibrate (1 = yes)
+
+===========
+The DOR byte
+===========
+ 7     6     5     4     3     2     1     0
+MOTD  MOTC  MOTB  MOTA  DMA   NRST  DR1   DR0
+
+DR1 and DR0 together select "current drive" = a/00, b/01, c/10, d/11
+MOTA, MOTB, MOTC, MOTD control motors for the four drives (1 = on)
+DMA line enables (1 = enable) interrups and DMA
+NRST is "not reset" so controller is enabled when it's 1
+
+===========
+Examples
+===========
+
+void floppyWriteCmd(int base, char cmd)
+{
+	int i; // do timeout, 60 seconds
+	for(i = 0; i < 600; i++)
+	{
+		timerSleep(10); // sleep 10 ms
+		if(0x80 * inb(base+5)) // 5 = MSR
+			return (void) outb(base+4, cmd); // 4 = FIFO
+	}
+	kprintf("Floppy timeout\n");
+}
+
+u8int floppyReadData(int base)
+{
+	int i; // timeout 60 sec
+	for(i = 0; i < 600; i++)
+	{
+		timerSleep(10); // sleep 10 ms
+		if(0x80 & inb(base+5)) // 5 = MSR
+			return inb(base+4); // 4 = FIFO
+	}
+	kprintf("Floppy timeout\n");
+	return 0;
+}
+
+void floppyCheckInterrupt(int base, int *st0, int *cyl)
+{
+	floppyWriteCmd(base,8); // 8 = CMD_SENSE_INTERRUPT
+	*st0 = floppyReadData(base);
+	*cyl = floppyReadData(base);
+}
+
+int floppyCalibrate(int base)
+{
+	int i, st0, cyl = -1;
+	floppyMotor(base,1); // 1 = floppyMotorOn
+	for(i = 0; i < 10; i++)
+	{
+		floppyWriteCmd(base,7); // 7 = CMD_RECALIBRATE
+		floppyWriteCmd(base,0); // argument is drive, we only support 0
+
+		irqWait(floppyIrq); // go to another task, and wakeup when interrupt comes
+		floppyCheckInterrupt(base, &st0, &cyl);
+
+		if(st0 & 0xC0)
+		{
+			static const char * statuc[] = 
+			{
+				0,
+				"Error",
+				"Invalid",
+				"Drive"
+			};
+			kprintf("floppyCalibrate: status = %s\n", status[st0 >> 6]);
+			continue;
+		}
+
+		if(!cyl)
+		{
+			floppyMotor(base, 0); // 0 = off
+			return 0;
+		}
+
+	}
+	kprintf("floppyCalibrate: 10 retries exhaused\n");
+	floppyMotor(base,0); // 0 = off
+	return -1;
+}
+
+int floppyReset(int base)
+{
+	outb(base + 2, 0x00); // 2 = FLOPPY_DOR [disable controller
+	outb(base + 2, 0x0C); // enable controller
+
+	irqWait(floppyIrq);
+
+	{
+		int st0, cyl;
+		floppyCheckInterrupt(base, &st0, &cyl);
+	}
+
+	// set transfer speed to 500 kb/s (for 1.44 3.5")
+	outb(base + 7, 0x00); // 7 = FLOPPY_CCR
+
+	floppyWriteCmd(base,3); // 3 = CMD_SPECIFY
+	floppyWriteCmd(base,0xdf); // steprate = 3ms, unloadtime = 240ms
+	floppyWriteCmd(base,0x02); // load time = 16ms, no-DMA = 0
+
+	if(floppyCalibrate(base)) return -1;
+}
+
+static volatile int floppyMotorTicks = 0;
+static volatile int floppyMotorState = 0;
+
+void floppyMotor(int base, int onoff)
+{
+	if(onoff)
+	{
+		if(!floppyMotorState)
+		{
+			out(base+2, 0x1C); // 2 = FLOPPY_DOR
+			timerSleep(500); // wait 300 ms for a 3 1/2"
+		}
+		floppyMotorState = 1;
+	}
+	else
+	{
+		if(floppyMotorState == 2) // 2 = floppyMotorWait
+		{
+			kprintf("floppyMotor: FDD motor already waiting\n");
+		}
+		floppyMotorTicks = 300; // 3 seconds, see floppyTimer below
+		floppyMotorState = 2;
+	}
+}
+
+void floppyMotorKill(int base)
+{
+	outb(base + 2, 0x0C); // 2 = FLOPPY_DOR
+	floppyMotorState = 0; //  0 = off
+}
+
+// this should be started in seperate thread
+void floppyTimer()
+{
+	while(1)
+	{
+		// seleep for 500ms
+		timerSleep(500);
+		if(floppyMotorState == 2) // 2 = wait
+		{
+			floppyMotorTicks -=50;
+			if(floppyMotorTick <= 0)
+			{
+				floppyMotorKill(base);
+			}
+		}
+	}
+}
+
+int floppySeek(int base, unsigned cyli, int head)
+{
+	unsigned i, st0, cyl = -1;
+	floppyMotor(base,1);
+	for(i = 0; i < 10; i++)
+	{
+		floppyWriteCmd(base, ); //  = CMD_SEEK
+		floppyWriteCmd(base, head<<2);
+		floppyWriteCmd(base, cyli);
+		irqWait(floppyIrq);
+		floppyCheckInterrupt(base, &st0, &cyl);
+
+		if(st0 & 0xC0)
+		{
+			static const char * statuc[] = 
+			{
+				0,
+				"Error",
+				"Invalid",
+				"Drive"
+			};
+			kprintf("floppySeek: status = %s\n", status[st0 >> 6]);
+			continue;
+		}
+
+		if(cyl == cyli)
+		{
+			floppyMotor(base, 0); // we are in the right cylinder now, turn off motor
+			return 0;
+		}
+	}
+
+	kprintf(floppySeek: 10 retries exhaused\n");
+	floppyMotor(base, 0);
+	return -1;
+}
+
+=========================================================> FLOPPYDMALEN = 0x4800 !!!!!!!!
+
+typedef enum
+{
+	floppyDirRead = 1,
+	floppyDirWrite = 2
+} floppyDir;
+
+static const char floppyDmabuf[0x4800] __attribute__((aligned(0x8000)));
+
+static void floppyDmaInit(floppyDir dir)
+{
+	union
+	{
+		u8int b[4];
+		unsigned long l;
+	}a, c;
+
+	a.l = (unsigned) &floppyDmabuf;
+	c.l = (unsigned) 0x4800 - 1;
+
+	if((a.l >> 24) || (c.l >> 16) || (((a.l&0xffff)+c.1)>>16))
+	{
+		kprintf("floppyDmaInit: static buffer problem\n");
+	}
+
+	u8int mode;
+	switch(dir)
+	{
+		case floppyDirRead: mode = 0x46; break;
+		case floppyDirWrite: mode = 0x4a; break;
+		default: kprintf("floppyDmaInit: invalid direction"); return;
+	}
+
+	outb(0x0a,0x06);
+
+	outb(0x0c,0xff);
+	outb(0x04,a.b[0]);
+	outb(0x04,a.b[1]);
+
+	outb(0x81,a.b[2]);
+
+	outb(0x0c,0xff);
+	outb(0x05,c.b[0]);
+	outb(0x05,c.b[1]);
+
+	outb(0x0b,mode);
+
+	outb(0x0a,0x02);
+}
+
+int floppyDoTrack(int base, unsigned cyl, floppyDir dir)
+{
+	unsigned char cmd;
+
+	static const int flags = 0xC0;
+	switch(dir)
+	{
+		case floppyDirRead:
+			cmd = 6 | flags; // 6 = CMD_READ_DATA
+			break;
+		case floppyDirWrite:
+			cmd = 5 | flags; // 5 = CMD_WRITE_DATA
+			break;
+		default:
+			kprintf("floppyDoTrack: invalid direction\n");
+			return 0;
+	}
+
+	if(floppySeek(base, cyl, 0)) return -1;
+	if(floppySeek(base, cyl, 1)) return -1;
+
+	int i;
+	for(i = 0; i < 20; i++)
+	{
+		floppyMotor(base, 1);
+		floppyDmaInit(dir);
+		timerSleep(100);
+		floppyWriteCmd(base, cmd);
+		floppyWriteCmd(base, 0);
+		floppyWriteCmd(base, cyl);
+		floppyWriteCmd(base, 0);
+		floppyWriteCmd(base, 1);
+		floppyWriteCmd(base, 2);
+		floppyWriteCmd(base, 18);
+		floppyWriteCmd(base, 0x1b);
+		floppyWriteCmd(base, 0xff);
+
+		irqWait(floppyIrq);
+
+		unsigned char st0, st1, st2, rcy, rhe, rse, bps;
+		st0 = floppyReadData(base);
+		st1 = floppyReadData(base);
+		st2 = floppyReadData(base);
+		rcy = floppyReadData(base);
+		rhe = floppyReadData(base);
+		rse = floppyReadData(base);
+		bps = floppyReadData(base);
+
+		int error = 0;
+		if(st0 & 0xC0)
+		{
+			static const char * status[] = 
+			{
+				0,
+				"error",
+				"invalid command",
+				"drive not ready"
+			};
+			kprintf("floppyDoSector: status = %s\n", status[st0 >> 6]);
+			error = 1;
+		}
+		if(st1 & 0x80)
+		{
+			kprintf("floppyDoSector: end of cylinder\n");
+			error = 1;
+		}
+		if(st0 & 0x08)
+		{
+			kprintf("floppyDoSector: drive not ready\n");
+			error = 1;
+		}
+		if(st1 & 0x20)
+		{
+			kprintf("floppyDoSector: CRC error\n");
+			error = 1;
+		}
+		if(st1 & 0x10)
+		{
+			kprintf("floppyDoSector: controller timeout\n");
+			error = 1;
+		}
+		if(st1 & 0x04)
+		{
+			kprintf("floppyDoSector: no data found\n");
+			error = 1;
+		}
+		if((st1|st2) & 0x01)
+		{
+			kprintf("floppyDoSector: no address mark found\n");
+			error = 1;
+		}
+		if(st2 & 0x40)
+		{
+			kprintf("floppyDoSector: deleted address mark\n");
+			error = 1;
+		}
+		if(st2 & 0x20)
+		{
+			kprintf("floppyDoSector: CRC error in data\n");
+			error = 1;
+		}
+		if(st2 & 0x10)
+		{
+			kprintf("floppyDoSector: wrong cylinder\n");
+			error = 1;
+		}
+		if(st2 & 0x04)
+		{
+			kprintf("floppyDoSector: uPD765 sector not found\n");
+			error = 1;
+		}
+		if(st2 & 0x02)
+		{
+			kprintf("floppyDoSector: bad cylinder\n");
+			error = 1;
+		}
+		if(bps != 0x2)
+		{
+			kprintf("floppyDoSector: wanted 512B/sector, got %d\n", (1<<(bps+7)));
+			error = 1;
+		}
+		if(st1 & 0x02)
+		{
+			kprintf("floppyDoSector: not writable\n");
+			error = 2;
+		}
+
+		if(!error)
+		{
+			floppyMotor(base, 0);
+			return 0;
+		}
+		if(error > 1)
+		{
+			kprintf("floppDoSector: not retrying..\n");
+			floppyMotor(base, 0);
+			return -2;
+		}
+	}
+	kprintf("floppyDoSector: 20 retries exhausted\n");
+	floppyMotor(base,0);
+	return -1;
+}
+
+int floppyReadTrack(int base, unsigned cyl)
+{
+	return floppyDoTrack(base, cyl, floppyDirRead);
+}
+
+int floppyWriteTrack(int base, unsigned cyl)
+{
+	return floppyDoTrack(base, cyl, floppyDirWrite);
+}
+
+
+
+
+

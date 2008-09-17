@@ -1,0 +1,15 @@
+===============
+Real Time Clock
+===============
+The RTC is a chip that containts its own memory (CMOS) and has its own battery.
+So it keeps running when the computer is turned off and the contents are not
+lost.
+
+===============
+RTC ports
+===============
+port   description
+0x70   index port
+0x71   data port
+
+

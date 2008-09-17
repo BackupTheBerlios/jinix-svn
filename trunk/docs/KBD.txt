@@ -1,0 +1,11 @@
+===============
+Control codes
+===============
+port  description
+60h   Data port
+64h   Command port. For enabling/disabling keyboard interrups etc.
+
+===============
+Controller chip
+===============
+8042 : Keyboard Controller Chip

@@ -1,0 +1,4 @@
+timeout 0
+title	Jinix
+echo Loading Jinix ...
+kernel /kernel vga=795

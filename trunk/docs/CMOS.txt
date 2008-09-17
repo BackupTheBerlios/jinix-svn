@@ -1,0 +1,137 @@
+===============
+CMOS info
+===============
+CMOS contains all the required settings about FFD, HDD, timers etc.
+It is 65 or 128 byte RAM and powered by a battery on the motherboard.
+
+
+===============
+CMOS ports
+===============
+port  description
+70h   index addresses
+71h   data
+
+===============
+CMOS Memory Map
+===============
+============
+Clock
+============
+00h Seconds		(BCD 00-59, Hex 00-3B) Note: Bit 7 is read only
+02h Minutes		(BCD 00-59, Hex 00-3B)
+04h Hours		(BCD 00-23, Hex 00-17) if 24 hour mode
+			(BCD 01-12, Hex 01-0C) if 12 hour AM
+			(BCD 81-92, Hex 81-8C) if 12 hour PM
+06h Day of Week		(01-07) Note: Sunday = 1
+07h Date of Month	(BCD 01-31, Hex 01-1F)
+08h Month		(BCD 01-12, Hex 01-0C)
+09h Year		(BCD 00-99, Hex 00-63)
+
+BCD/Hex selection depends on Bit 2 of register B (0Bh)		0: BCD 1: Binary
+12/24 Hour selection depends on Bit 1 of register B (0Bh)	0: 12H 1: 24H
+
+============
+10h - FDD
+============
+Bits 7-4 - First Floppy Disk Drive Type
+Bits 3-0 - Second Floppy Disk Drive Type
+	0h	No Drive
+	1h	360kb	5 1/4 Drive
+	2h	1.2mb	5 1/4 Drive
+	3h	720kb	3 1/2 Drive
+	4h	1.44mb	3 1/2 Drive
+
+Example:
+	A = No Drive
+	B = 1.44mb 3 1/2 Drive
+	value of 10h: 40h
+
+============
+12h - HDD
+============
+Bits 7-4 - First Hard Disk Drive
+Bits 3-0 - Second Hard Disk Drive
+	00h	No Drive
+	01h-0Eh	Hard Drive Type 1-14
+	0Fh	Hard Drive Type 16-255
+
+Example:
+	Type 2 (20 Mb ST-225) Hard Disk
+	20h in byte 12h
+
+============
+14h - Equipment
+============
+Bits 7-6 - Number of Floppy Drives
+	00b	1 Drive
+	01b	2 Drives
+	10b ???	3 Drives
+	11b ??? 4 Drives
+
+Bits 5-4 - Monitor Type
+	00b Not CGA or MDA (observed for EGA & VGA)
+	01b 40x25 CGA
+	10b 80x25 CGA
+	11b MDA (Monochrome)
+Bit 3 - Display Enabled (1 = On) (Turned off for rackmount boot)
+Bit 2 - Keyboard Enabled (1 = On) (Turned off for rackmount boot)
+Bit 0 - Floppy Drive Installed (1 = On) (Turned off for rackmount boot)
+===============
+CMOS Reading
+===============
+Written in C
+ReadFromCMOS(u8int array [])
+{
+	int index;
+	u8int tvalue, bindex;
+	for(index = 0; index < 128; index++)
+	{
+		char AL_ = (u8int) index;
+		_asm
+		{
+			xor ax,ax
+			cli
+			mov al,AL
+			out 0x70,al
+			nop
+			nop
+			nop
+			in al,0x71
+			sti
+			mov tvalue,al
+		}
+
+		array[index] = tvalue;
+	}
+}
+
+===============
+CMOS Writing
+===============
+Written in C
+WriteToCMOS(u8int array [])
+{
+	u8int index;
+
+	for(index = 0; index < 128; index++)
+	{
+		u8int tvalue = array[index];
+		_asm
+		{
+			xor ax,ax
+			cli
+			mov al,index
+			mov ah,tvalue
+			out 0x70,al
+			nop
+			nop
+			nop
+			in al,ah
+			out 0x71,al
+			sti
+		}
+	}
+}
+
+

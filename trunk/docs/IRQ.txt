@@ -1,0 +1,34 @@
+=============
+Control codes
+=============
+port  description
+20h   Control port master PIC
+21h   Mask port master PIC
+A0h   Control port slave PIC
+A1h   Mask port slave PIC
+
+=============
+List of IRQs
+=============
+irq  description
+0  : Timer Interrupt -> PIT
+1  : Keyboard Interrupt -> KBD
+2  : Cascade (used internally)
+3  : COM2 (if enabled)
+4  : COM1 (if enabled)
+5  : LPT2
+6  : Floppy Disk
+7  : LPT1
+8  : RTC
+9  : 
+10 : 
+11 : 
+12 : PS/2 Mouse
+13 : Coprocessor
+14 : ATA hard Disk
+15 : ATA hard Disk
+
+===============
+Controller chip
+===============
+8259 : Programmeble Interrupt Controller
